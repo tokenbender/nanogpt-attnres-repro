@@ -19,8 +19,10 @@ dropout = 0.0
 bias = False
 
 batch_size = 32
-gradient_accumulation_steps = 4  # intended 4-GPU budget: ~1.05B tokens total
-max_iters = 2000
+gradient_accumulation_steps = 4
+target_tokens_per_iter = 131072
+target_tokens = 1048576000
+max_iters = 8000
 eval_interval = 500
 log_interval = 10
 eval_iters = 100
@@ -34,7 +36,8 @@ grad_clip = 1.0
 
 # lr schedule
 warmup_iters = 200
-lr_decay_iters = 2000
+lr_decay_iters = 8000
+lock_lr_decay_to_max_iters = True
 min_lr = 6e-5
 
 # dtype

@@ -64,6 +64,12 @@ min_lr = 6e-5
 
 gradient_accumulation_steps = 1
 
+# Optional semantic locks for fair comparisons across hardware.
+# If set, the trainer derives accumulation and/or iteration count from these.
+target_tokens_per_iter = None
+target_tokens = None
+lock_lr_decay_to_max_iters = False
+
 seed = 1337
 
 # dataset: "fineweb10B"
@@ -205,8 +211,6 @@ if ddp:
     dist.barrier()
     master_process = ddp_rank == 0
     seed_offset = ddp_rank
-    assert gradient_accumulation_steps % ddp_world_size == 0
-    gradient_accumulation_steps //= ddp_world_size
 else:
     master_process = True
     seed_offset = 0
@@ -227,6 +231,67 @@ device_type = (
     if isinstance(device, torch.device)
     else ("cuda" if "cuda" in device else ("mps" if "mps" in device else "cpu"))
 )
+
+
+def _apply_semantic_budget_locks() -> None:
+    global gradient_accumulation_steps_total
+    global gradient_accumulation_steps
+    global max_iters
+    global lr_decay_iters
+
+    tokens_per_micro_step = batch_size * block_size
+
+    if target_tokens_per_iter is not None:
+        if target_tokens_per_iter <= 0:
+            raise ValueError("target_tokens_per_iter must be positive")
+        if target_tokens_per_iter % tokens_per_micro_step != 0:
+            raise ValueError(
+                "target_tokens_per_iter must be divisible by batch_size * block_size; "
+                "increase batch_size or choose a compatible target_tokens_per_iter"
+            )
+        gradient_accumulation_steps_total = (
+            target_tokens_per_iter // tokens_per_micro_step
+        )
+
+    if gradient_accumulation_steps_total <= 0:
+        raise ValueError("gradient_accumulation_steps must be positive")
+
+    if ddp:
+        if gradient_accumulation_steps_total % ddp_world_size != 0:
+            raise ValueError(
+                "gradient_accumulation_steps_total must be divisible by WORLD_SIZE; "
+                "adjust batch_size or target_tokens_per_iter"
+            )
+        gradient_accumulation_steps = (
+            gradient_accumulation_steps_total // ddp_world_size
+        )
+    else:
+        gradient_accumulation_steps = gradient_accumulation_steps_total
+
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps_per_rank must be positive")
+
+    derived_tokens_per_iter = (
+        gradient_accumulation_steps * ddp_world_size * batch_size * block_size
+    )
+    if (
+        target_tokens_per_iter is not None
+        and derived_tokens_per_iter != target_tokens_per_iter
+    ):
+        raise RuntimeError(
+            "derived tokens_per_iter does not match target_tokens_per_iter; "
+            "this indicates a bookkeeping bug"
+        )
+
+    if target_tokens is not None:
+        if target_tokens <= 0:
+            raise ValueError("target_tokens must be positive")
+        max_iters = math.ceil(target_tokens / derived_tokens_per_iter)
+        if lock_lr_decay_to_max_iters:
+            lr_decay_iters = max_iters
+
+
+_apply_semantic_budget_locks()
 
 # -----------------------------------------------------------------------------
 # Minimal run artifact contract
@@ -374,6 +439,9 @@ def _write_config_effective(*, out_dir_path: Path) -> None:
         "max_iters",
         "batch_size",
         "block_size",
+        "target_tokens_per_iter",
+        "target_tokens",
+        "lock_lr_decay_to_max_iters",
         # hyper-connections
         "hc_num_streams",
         "hc_num_fracs",
@@ -407,6 +475,7 @@ def _write_config_effective(*, out_dir_path: Path) -> None:
             "wandb_variant": wandb_variant,
             "ddp": ddp,
             "world_size": ddp_world_size,
+            "tokens_per_micro_step": batch_size * block_size,
             "gradient_accumulation_steps_total": gradient_accumulation_steps_total,
             "gradient_accumulation_steps_per_rank": gradient_accumulation_steps,
         }
@@ -718,15 +787,21 @@ iter_num = 0
 best_val_loss = 1e9
 last_eval_losses = None
 last_eval_iter = None
+last_train_log = None
 
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 if master_process:
     print(f"Training on {device}, dtype={dtype}, DDP={ddp}")
     print(f"  tokens per iteration: {tokens_per_iter:,}")
+    print(f"  grad_accum_total={gradient_accumulation_steps_total}")
     if ddp:
         print(
-            f"  world_size={ddp_world_size}, grad_accum_steps={gradient_accumulation_steps}"
+            f"  world_size={ddp_world_size}, grad_accum_steps_per_rank={gradient_accumulation_steps}"
         )
+    if target_tokens_per_iter is not None:
+        print(f"  target_tokens_per_iter={target_tokens_per_iter:,}")
+    if target_tokens is not None:
+        print(f"  target_tokens={target_tokens:,}, derived max_iters={max_iters}")
     print(f"  model params: {sum(p.numel() for p in raw_model.parameters()):,}")
     print()
 
@@ -770,9 +845,14 @@ try:
                 "ns_coeffs": ns_coeffs,
                 "v_residual": v_residual,
                 "v_residual_lamb_lr": v_residual_lamb_lr,
+                "target_tokens_per_iter": target_tokens_per_iter,
+                "target_tokens": target_tokens,
+                "lock_lr_decay_to_max_iters": lock_lr_decay_to_max_iters,
                 "dtype": dtype,
                 "world_size": ddp_world_size,
                 "tokens_per_iter": tokens_per_iter,
+                "gradient_accumulation_steps_total": gradient_accumulation_steps_total,
+                "gradient_accumulation_steps_per_rank": gradient_accumulation_steps,
                 "wandb_log_layer_stats": wandb_log_layer_stats,
                 "wandb_log_layer_cosine": wandb_log_layer_cosine,
             },
@@ -865,6 +945,22 @@ try:
 
         if iter_num % log_interval == 0 and master_process:
             loss_item = loss.item() * gradient_accumulation_steps
+            last_train_log = {
+                "iter": int(iter_num),
+                "loss": float(loss_item),
+                "lr": float(lr),
+                "iter_time_ms": float(dt * 1000),
+                "tok_per_sec": float(tokens_per_sec),
+            }
+            if grad_norm is not None:
+                last_train_log["grad_norm"] = float(grad_norm.item())
+            if device_type == "cuda":
+                last_train_log["max_mem_allocated_mb"] = float(
+                    torch.cuda.max_memory_allocated() / 1e6
+                )
+                last_train_log["max_mem_reserved_mb"] = float(
+                    torch.cuda.max_memory_reserved() / 1e6
+                )
             print(
                 f"iter {iter_num}: loss {loss_item:.4f}, lr {lr:.2e}, "
                 f"time {dt * 1000:.0f}ms, tok/s {tokens_per_sec:.0f}"
@@ -919,6 +1015,7 @@ finally:
             "last_eval": _json_safe(last_eval_losses)
             if last_eval_losses is not None
             else None,
+            "last_train_log": _json_safe(last_train_log),
             "ddp": bool(ddp),
             "world_size": int(ddp_world_size),
             "device": str(device),

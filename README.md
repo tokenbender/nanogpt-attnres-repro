@@ -69,6 +69,24 @@ The bar in this repo is simple:
 - degenerate and boundary cases must be tested before long runs are trusted
 - experiment plots are only meaningful after invariants and integration tests pass
 
+## Budgeting Strategy
+
+- FineWeb comparison configs lock experiment semantics with `target_tokens_per_iter` and `target_tokens`
+- tune `batch_size` for the hardware you actually have, and let the trainer derive accumulation to preserve the semantic batch
+- prefer higher real microbatch size and lower accumulation on larger GPUs, as long as the semantic target stays fixed
+
+## Autotuning
+
+- use `examples/nanogpt/autotune.py` to benchmark legal per-device batch sizes for a given config while keeping the semantic batch fixed
+- example single-node run:
+
+```bash
+cd examples/nanogpt
+python autotune.py config/train_fineweb10B.py --nproc-per-node 1 --data-dir /path/to/fineweb10B
+```
+
+- the autotuner writes benchmark artifacts and a `results.csv` under `experiments/autotune/`
+
 ## Local Data
 
 The vendored train harness currently expects FineWeb-style binary shards.
