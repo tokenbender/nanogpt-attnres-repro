@@ -43,6 +43,8 @@ Initial scaffold.
 - run-contract and mHC invariant tests copied in
 - AttnRes implementation still to be added
 
+Legacy `HC` and `vRes` codepaths are currently vendored only for parity with the source nanoGPT harness. They are not part of the primary comparison matrix for this repo.
+
 See `docs/FEATURE_ISSUES.md` for the first feature issues to build.
 
 ## Paper References

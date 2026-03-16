@@ -4,6 +4,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from attnres import FullAttnResReference
 from hyper_connections import get_init_and_expand_reduce_stream_functions
 from value_residual import ValueResidualState
 
@@ -115,6 +116,22 @@ class AttnBranch(nn.Module):
         return self.attn(x, vrl_state=vrl_state)
 
 
+class AttnResBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.mlp = MLP(config)
+        self.attn_branch = AttnBranch(self.ln_1, self.attn)
+
+    def attn_output(self, x, vrl_state=None):
+        return self.attn_branch(x, vrl_state=vrl_state)
+
+    def mlp_output(self, x):
+        return self.mlp(self.ln_2(x))
+
+
 class Block(nn.Module):
     def __init__(self, config, layer_idx, init_hc):
         super().__init__()
@@ -180,6 +197,9 @@ class GPTConfig:
         self.mhc_residual_alpha = kwargs.pop("mhc_residual_alpha", 0.01)
         self.v_residual = kwargs.pop("v_residual", False)
         self.v_residual_lamb_lr = kwargs.pop("v_residual_lamb_lr", 1e-2)
+        self.attnres_variant = kwargs.pop("attnres_variant", "none")
+        self.attnres_block_size = kwargs.pop("attnres_block_size", 1)
+        self.attnres_eps = kwargs.pop("attnres_eps", 1e-8)
 
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -193,26 +213,46 @@ class GPT(nn.Module):
 
         self.config = config
         self.vrl_state = ValueResidualState() if config.v_residual else None
+        self.use_attnres = config.attnres_variant != "none"
+        self.attnres_num_logical_layers = 2 * config.n_layer
+        self.attnres_mixer = None
 
-        init_hc, expand_stream, reduce_stream = (
-            get_init_and_expand_reduce_stream_functions(
-                config.hc_num_streams,
-                num_fracs=config.hc_num_fracs,
-                disable=config.hc_disable,
+        self._validate_config()
+
+        if self.use_attnres:
+            if config.attnres_variant == "full":
+                self.attnres_mixer = FullAttnResReference(
+                    num_layers=self.attnres_num_logical_layers,
+                    dim=config.n_embd,
+                    eps=config.attnres_eps,
+                )
+            else:
+                raise NotImplementedError(
+                    f"attnres_variant={config.attnres_variant!r} is not integrated into GPT yet"
+                )
+
+            self.expand_stream = None
+            self.reduce_stream = None
+            blocks = [AttnResBlock(config) for _ in range(config.n_layer)]
+        else:
+            init_hc, expand_stream, reduce_stream = (
+                get_init_and_expand_reduce_stream_functions(
+                    config.hc_num_streams,
+                    num_fracs=config.hc_num_fracs,
+                    disable=config.hc_disable,
+                )
             )
-        )
 
-        self.expand_stream = expand_stream
-        self.reduce_stream = reduce_stream
+            self.expand_stream = expand_stream
+            self.reduce_stream = reduce_stream
+            blocks = [Block(config, i, init_hc) for i in range(config.n_layer)]
 
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
                 wpe=nn.Embedding(config.block_size, config.n_embd),
                 drop=nn.Dropout(config.dropout),
-                h=nn.ModuleList(
-                    [Block(config, i, init_hc) for i in range(config.n_layer)]
-                ),
+                h=nn.ModuleList(blocks),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
             )
         )
@@ -228,6 +268,29 @@ class GPT(nn.Module):
                     param, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
                 )
 
+    def _validate_config(self):
+        valid_attnres_variants = {"none", "full", "block"}
+        if self.config.attnres_variant not in valid_attnres_variants:
+            raise ValueError(
+                f"attnres_variant must be one of {sorted(valid_attnres_variants)}, got {self.config.attnres_variant!r}"
+            )
+
+        if not self.use_attnres:
+            return
+
+        if self.config.mhc:
+            raise ValueError("Attention Residuals cannot be combined with mhc")
+        if not self.config.hc_disable:
+            raise ValueError("Attention Residuals requires hc_disable=True")
+        if self.config.hc_num_streams != 1:
+            raise ValueError("Attention Residuals requires hc_num_streams=1")
+        if self.config.hc_num_fracs != 1:
+            raise ValueError("Attention Residuals requires hc_num_fracs=1")
+        if self.config.attnres_block_size <= 0:
+            raise ValueError("attnres_block_size must be positive")
+        if self.config.attnres_eps <= 0:
+            raise ValueError("attnres_eps must be positive")
+
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -236,27 +299,69 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def _embed_input(self, idx):
         b, t = idx.size()
         assert t <= self.config.block_size
 
         pos = torch.arange(0, t, dtype=torch.long, device=idx.device).unsqueeze(0)
-
         tok_emb = self.transformer.wte(idx)
         pos_emb = self.transformer.wpe(pos)
+        return self.transformer.drop(tok_emb + pos_emb)
 
-        x = self.transformer.drop(tok_emb + pos_emb)
-        x = self.expand_stream(x)
+    def _forward_full_attnres_hidden(self, embedding, vrl_state=None):
+        logical_outputs = []
+
+        for block_index, block in enumerate(self.transformer.h):
+            attn_layer_index = 2 * block_index
+            attn_input = self.attnres_mixer.layer_input(
+                embedding=embedding,
+                prior_layer_outputs=logical_outputs,
+                layer_index=attn_layer_index,
+            )
+            attn_output = block.attn_output(attn_input, vrl_state=vrl_state)
+            logical_outputs.append(attn_output)
+
+            mlp_layer_index = attn_layer_index + 1
+            mlp_input = self.attnres_mixer.layer_input(
+                embedding=embedding,
+                prior_layer_outputs=logical_outputs,
+                layer_index=mlp_layer_index,
+            )
+            mlp_output = block.mlp_output(mlp_input)
+            logical_outputs.append(mlp_output)
+
+        if len(logical_outputs) != self.attnres_num_logical_layers:
+            raise RuntimeError(
+                f"expected {self.attnres_num_logical_layers} logical outputs, got {len(logical_outputs)}"
+            )
+
+        return self.attnres_mixer.final_output(
+            embedding=embedding,
+            layer_outputs=logical_outputs,
+        )
+
+    def forward(self, idx, targets=None):
+        x = self._embed_input(idx)
 
         vrl_state = self.vrl_state
         if vrl_state is not None:
             vrl_state.reset()
 
-        for block in self.transformer.h:
-            x = block(x, vrl_state=vrl_state)
+        if self.use_attnres:
+            if self.config.attnres_variant != "full":
+                raise NotImplementedError(
+                    f"attnres_variant={self.config.attnres_variant!r} is not implemented in forward"
+                )
+            x = self._forward_full_attnres_hidden(x, vrl_state=vrl_state)
+            x = self.transformer.ln_f(x)
+        else:
+            x = self.expand_stream(x)
 
-        x = self.transformer.ln_f(x)
-        x = self.reduce_stream(x)
+            for block in self.transformer.h:
+                x = block(x, vrl_state=vrl_state)
+
+            x = self.transformer.ln_f(x)
+            x = self.reduce_stream(x)
 
         logits = self.lm_head(x)
 

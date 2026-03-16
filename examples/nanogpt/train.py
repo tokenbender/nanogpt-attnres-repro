@@ -104,6 +104,11 @@ mhc_residual_alpha = 0.01
 v_residual = False
 v_residual_lamb_lr = 1e-2
 
+# attention residuals config
+attnres_variant = "none"
+attnres_block_size = 1
+attnres_eps = 1e-8
+
 # dtype: "float32", "bfloat16", "float16"
 dtype = "bfloat16"
 
@@ -131,6 +136,8 @@ exec(open(os.path.join(os.path.dirname(__file__), "configurator.py")).read())
 
 
 def get_wandb_variant():
+    if attnres_variant != "none":
+        return f"attnres-{attnres_variant}"
     if v_residual:
         return "vres"
     if mhc:
@@ -173,6 +180,11 @@ if mhc:
 
 if v_residual:
     wandb_tags.append("v_residual")
+
+if attnres_variant != "none":
+    wandb_tags.append(f"attnres={attnres_variant}")
+    if attnres_variant == "block":
+        wandb_tags.append(f"attnres_block_size={attnres_block_size}")
 
 # -----------------------------------------------------------------------------
 # DDP setup
