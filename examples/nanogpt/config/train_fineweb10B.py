@@ -18,9 +18,10 @@ dropout = 0.0
 bias = False
 
 # training
+# On the intended 4-GPU setup this is ~1.05B tokens total.
 batch_size = 32
 gradient_accumulation_steps = 4  # effective batch = 32 * 4 * 4 GPUs = 512 seqs
-max_iters = 5000
+max_iters = 2000
 eval_interval = 500
 log_interval = 10
 eval_iters = 100
@@ -34,7 +35,7 @@ grad_clip = 1.0
 
 # lr schedule
 warmup_iters = 200
-lr_decay_iters = 5000
+lr_decay_iters = 2000
 min_lr = 6e-5
 
 # dtype
