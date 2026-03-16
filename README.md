@@ -36,14 +36,14 @@ Non-goals for the first phase:
 
 ## Current Status
 
-Initial scaffold.
+Active implementation workspace.
 
 - vendored nanoGPT training harness
-- vendored `hyper_connections` package for mHC baseline parity work
+- vendored `hyper_connections` package for mHC experiments
 - run-contract and mHC invariant tests copied in
-- AttnRes implementation still to be added
+- Full AttnRes reference and training-path integration are in progress
 
-Legacy `HC` and `vRes` codepaths are currently vendored only for parity with the source nanoGPT harness. They are not part of the primary comparison matrix for this repo.
+Legacy `HC` and `vRes` codepaths are currently vendored only because they are present in the inherited nanoGPT harness. They are not part of the primary comparison matrix for this repo.
 
 See `docs/FEATURE_ISSUES.md` for the first feature issues to build.
 
@@ -67,19 +67,19 @@ The bar in this repo is simple:
 - no approximate AttnRes implementation gets merged as if it were faithful
 - every optimized residual mixer needs a tiny reference implementation
 - degenerate and boundary cases must be tested before long runs are trusted
-- experiment plots are only meaningful after invariants and parity tests pass
+- experiment plots are only meaningful after invariants and integration tests pass
 
 ## Local Data
 
 The vendored train harness currently expects FineWeb-style binary shards.
 
-The existing local source repo already contains a usable path for smoke runs:
+- Place shards under `examples/nanogpt/data/fineweb10B/` or pass `data_dir=...` at launch time.
 
-- `/Users/tokenbender/Documents/mHC-manifold-constrained-hyper-connections/examples/nanogpt/data/fineweb10B/`
+- The current downloader script lives at `examples/nanogpt/data/fineweb10B/download.py`.
 
 ## First Build Sequence
 
-1. baseline + mHC parity in the standalone repo
+1. baseline + mHC correctness in the standalone repo
 2. Full AttnRes reference implementation
 3. Full AttnRes training-path integration
 4. Block AttnRes implementation with paper-faithful block bookkeeping

@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from attnres import FullAttnResReference
+from attnres import BlockAttnResReference, FullAttnResReference
 from hyper_connections import get_init_and_expand_reduce_stream_functions
 from value_residual import ValueResidualState
 
@@ -226,6 +226,13 @@ class GPT(nn.Module):
                     dim=config.n_embd,
                     eps=config.attnres_eps,
                 )
+            elif config.attnres_variant == "block":
+                self.attnres_mixer = BlockAttnResReference(
+                    num_layers=self.attnres_num_logical_layers,
+                    dim=config.n_embd,
+                    block_size=config.attnres_block_size,
+                    eps=config.attnres_eps,
+                )
             else:
                 raise NotImplementedError(
                     f"attnres_variant={config.attnres_variant!r} is not integrated into GPT yet"
@@ -340,6 +347,33 @@ class GPT(nn.Module):
             layer_outputs=logical_outputs,
         )
 
+    def _forward_block_attnres_hidden(self, embedding, vrl_state=None):
+        state = self.attnres_mixer.init_state(embedding)
+
+        for block_index, block in enumerate(self.transformer.h):
+            attn_layer_index = 2 * block_index
+            attn_input = self.attnres_mixer.layer_input(
+                state=state,
+                layer_index=attn_layer_index,
+            )
+            attn_output = block.attn_output(attn_input, vrl_state=vrl_state)
+            self.attnres_mixer.append_layer_output(state, attn_output)
+
+            mlp_layer_index = attn_layer_index + 1
+            mlp_input = self.attnres_mixer.layer_input(
+                state=state,
+                layer_index=mlp_layer_index,
+            )
+            mlp_output = block.mlp_output(mlp_input)
+            self.attnres_mixer.append_layer_output(state, mlp_output)
+
+        if state.completed_layers != self.attnres_num_logical_layers:
+            raise RuntimeError(
+                f"expected {self.attnres_num_logical_layers} logical outputs, got {state.completed_layers}"
+            )
+
+        return self.attnres_mixer.final_output(state)
+
     def forward(self, idx, targets=None):
         x = self._embed_input(idx)
 
@@ -348,11 +382,14 @@ class GPT(nn.Module):
             vrl_state.reset()
 
         if self.use_attnres:
-            if self.config.attnres_variant != "full":
+            if self.config.attnres_variant == "full":
+                x = self._forward_full_attnres_hidden(x, vrl_state=vrl_state)
+            elif self.config.attnres_variant == "block":
+                x = self._forward_block_attnres_hidden(x, vrl_state=vrl_state)
+            else:
                 raise NotImplementedError(
                     f"attnres_variant={self.config.attnres_variant!r} is not implemented in forward"
                 )
-            x = self._forward_full_attnres_hidden(x, vrl_state=vrl_state)
             x = self.transformer.ln_f(x)
         else:
             x = self.expand_stream(x)
