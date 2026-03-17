@@ -281,7 +281,7 @@ class HyperConnections(Module):
         self.num_residual_streams = num_residual_streams
         init_residual_index = (
             default(layer_index, randrange(num_residual_streams)) % num_residual_streams
-        )  # just choose one random residual stream if layer index not given
+        )  # fall back to a random residual stream when layer_index is not provided
 
         # handle the parameter dimensions, which may require (num_residuals x num_fractions) - generalizing hyper + frac connections
 
@@ -329,13 +329,12 @@ class HyperConnections(Module):
 
         self.channel_first = channel_first
 
-        # maybe residual transform
+        # optional residual transform
 
         self.residual_transform = default(residual_transform, nn.Identity())
 
-        # maybe custom depth connection residual function
-        # this is to prepare for gating the addition of the branch outputs to the residual streams
-        # needed for memory lanes a la RMT / LMM
+        # optional residual combiner for variants that modify branch-output updates,
+        # such as memory-lane style architectures
 
         self.depth_residual_fn = depth_residual_fn
 
@@ -573,7 +572,7 @@ class HyperConnections(Module):
         if self.channel_first:
             branch_input = rearrange(branch_input, "b ... d -> b d ...")
 
-        # maybe merge fractions back
+        # merge fractions back
 
         branch_input = self.merge_fracs(branch_input)
 
@@ -590,7 +589,7 @@ class HyperConnections(Module):
     def depth_connection(self, branch_output, residuals, *, beta, residuals_mixed=None):
         assert self.add_branch_out_to_residual
 
-        # maybe split fractions
+        # split fractions
 
         branch_output = self.split_fracs(branch_output)
 
@@ -622,7 +621,7 @@ class HyperConnections(Module):
 
         output = rearrange(output, "b ... s d -> (b s) ... d")
 
-        # merge merge back fractions
+        # merge fractions back
 
         output = self.merge_fracs(output)
 
@@ -716,7 +715,8 @@ class StreamEmbed(Module):
         return residuals
 
 
-# attention pool - taken from Enformer https://www.nature.com/articles/s41592-021-01252-x , in turn taken from somewhere else
+# Attention pooling adapted from Enformer:
+# https://www.nature.com/articles/s41592-021-01252-x
 
 
 class AttentionPoolReduceStream(Module):

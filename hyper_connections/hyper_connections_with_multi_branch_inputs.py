@@ -27,43 +27,52 @@ from hyper_connections.hyper_connections import Residual, StreamEmbed, RMSNorm
 
 # helper functions
 
+
 def exists(v):
     return v is not None
+
 
 def default(v, d):
     return v if exists(v) else d
 
+
 def divisible_by(num, den):
     return (num % den) == 0
+
 
 def identity(t):
     return t
 
+
 # main functions
 
-def get_expand_reduce_stream_functions(cls, num_streams, disable = False):
+
+def get_expand_reduce_stream_functions(cls, num_streams, disable=False):
     if num_streams == 1 or disable:
         return (nn.Identity(), nn.Identity())
 
-    expand_fn = Reduce(pattern = 'b ... -> (b s) ...', reduction = 'repeat', s = num_streams)
-    reduce_fn = Reduce(pattern = '(b s) ... -> b ...', reduction = 'sum', s = num_streams)
+    expand_fn = Reduce(pattern="b ... -> (b s) ...", reduction="repeat", s=num_streams)
+    reduce_fn = Reduce(pattern="(b s) ... -> b ...", reduction="sum", s=num_streams)
 
     return expand_fn, reduce_fn
 
-def get_init_and_expand_reduce_stream_functions(cls, num_streams, disable = None):
+
+def get_init_and_expand_reduce_stream_functions(cls, num_streams, disable=None):
 
     disable = default(disable, num_streams == 1)
 
     hyper_conn_klass = HyperConnections if not disable else Residual
 
     init_hyper_conn_fn = partial(hyper_conn_klass, num_streams)
-    expand_reduce_fns = get_expand_reduce_stream_functions(num_streams, disable = disable)
+    expand_reduce_fns = get_expand_reduce_stream_functions(num_streams, disable=disable)
 
     return (init_hyper_conn_fn, *expand_reduce_fns)
+
 
 # main classes
 
 # hyper connection residual streams
+
 
 class HyperConnections(Module):
     def __init__(
@@ -72,11 +81,11 @@ class HyperConnections(Module):
         *,
         dim,
         branch=None,
-        layer_index = None,
-        tanh = True,
-        channel_first = False,
-        dropout = 0.,
-        num_branch_inputs = 1  # residuals will be linearly combined to multiple inputs, fed through the branch, then linearly combined back out to residuals
+        layer_index=None,
+        tanh=True,
+        channel_first=False,
+        dropout=0.0,
+        num_branch_inputs=1,  # residuals will be linearly combined to multiple inputs, fed through the branch, then linearly combined back out to residuals
     ):
         """
         Appendix J, Algorithm2 in - https://arxiv.org/abs/2409.19606
@@ -93,16 +102,18 @@ class HyperConnections(Module):
 
             self.branches = ModuleList(branch)
 
-        # activation, seemingly results were wishy washy depending on using tanh or not
+        # activation used for the dynamic projections
 
         self.act = nn.Tanh() if tanh else nn.Identity()
 
-        self.norm = RMSNorm(dim) # they used layernorm in paper, but rmsnorm is fine given what we know now
+        self.norm = RMSNorm(dim)  # uses RMSNorm instead of the paper's LayerNorm
 
         self.num_residual_streams = num_residual_streams
         self.num_branch_inputs = num_branch_inputs
 
-        self.static_beta = nn.Parameter(torch.ones(num_residual_streams, num_branch_inputs))
+        self.static_beta = nn.Parameter(
+            torch.ones(num_residual_streams, num_branch_inputs)
+        )
 
         # make sure each branch input receives from different residual stream on init
 
@@ -113,12 +124,20 @@ class HyperConnections(Module):
         stream_seq = torch.arange(num_residual_streams)
         branch_input_seq = torch.arange(num_branch_inputs)
 
-        init_alpha0 = rearrange(stream_seq, 's -> s 1') + rearrange(branch_input_seq, 'bi -> 1 bi') + layer_offset
+        init_alpha0 = (
+            rearrange(stream_seq, "s -> s 1")
+            + rearrange(branch_input_seq, "bi -> 1 bi")
+            + layer_offset
+        )
         init_alpha0 = ((init_alpha0 % num_residual_streams) == 0).float()
 
-        self.static_alpha = nn.Parameter(torch.cat([init_alpha0, torch.eye(num_residual_streams)], dim = 1))
+        self.static_alpha = nn.Parameter(
+            torch.cat([init_alpha0, torch.eye(num_residual_streams)], dim=1)
+        )
 
-        self.dynamic_alpha_fn = nn.Parameter(torch.zeros(dim, num_residual_streams + num_branch_inputs))
+        self.dynamic_alpha_fn = nn.Parameter(
+            torch.zeros(dim, num_residual_streams + num_branch_inputs)
+        )
         self.dynamic_alpha_scale = nn.Parameter(torch.ones(()) * 1e-2)
         self.dynamic_beta_fn = nn.Parameter(torch.zeros(dim, num_branch_inputs))
         self.dynamic_beta_scale = nn.Parameter(torch.ones(()) * 1e-2)
@@ -132,14 +151,17 @@ class HyperConnections(Module):
         self.channel_first = channel_first
 
     def width_connection(self, residuals):
-        num_streams, num_branch_inputs = self.num_residual_streams, self.num_branch_inputs
+        num_streams, num_branch_inputs = (
+            self.num_residual_streams,
+            self.num_branch_inputs,
+        )
 
         # width connection
 
         if self.channel_first:
-            residuals = rearrange(residuals, 'b d ... -> b ... d')
+            residuals = rearrange(residuals, "b d ... -> b ... d")
 
-        residuals = rearrange(residuals, '(b s) ... d -> b ... s d', s = num_streams)
+        residuals = rearrange(residuals, "(b s) ... d -> b ... s d", s=num_streams)
 
         normed = self.norm(residuals)
 
@@ -156,36 +178,43 @@ class HyperConnections(Module):
 
         beta = dynamic_beta + self.static_beta
 
-        mix_h = einsum(alpha, residuals, '... s t, ... s d -> ... t d')
+        mix_h = einsum(alpha, residuals, "... s t, ... s d -> ... t d")
 
-        branch_input, residuals = mix_h[..., :-num_streams, :], mix_h[..., -num_streams:, :]
+        branch_input, residuals = (
+            mix_h[..., :-num_streams, :],
+            mix_h[..., -num_streams:, :],
+        )
 
-        branch_input = rearrange(branch_input, 'b ... i d -> (i b) ... d')
+        branch_input = rearrange(branch_input, "b ... i d -> (i b) ... d")
 
         if self.channel_first:
-            branch_input = rearrange(branch_input, 'b ... d -> b d ...')
+            branch_input = rearrange(branch_input, "b ... d -> b d ...")
 
-        return branch_input, residuals, dict(beta = beta)
+        return branch_input, residuals, dict(beta=beta)
 
     def depth_connection(self, branch_output, residuals, *, beta):
         # 'depth' connection
 
         if self.channel_first:
-            branch_output = rearrange(branch_output, 'b d ... -> b ... d')
+            branch_output = rearrange(branch_output, "b d ... -> b ... d")
 
-        branch_output = rearrange(branch_output, '(i b) ... -> i b ...', i = self.num_branch_inputs)
+        branch_output = rearrange(
+            branch_output, "(i b) ... -> i b ...", i=self.num_branch_inputs
+        )
 
-        residuals = einsum(branch_output, beta, 'i b ... d, b ... s i -> b ... s d') + residuals
+        residuals = (
+            einsum(branch_output, beta, "i b ... d, b ... s i -> b ... s d") + residuals
+        )
 
-        output = rearrange(residuals, 'b ... s d -> (b s) ... d')
+        output = rearrange(residuals, "b ... s d -> (b s) ... d")
 
         if self.channel_first:
-            output = rearrange(output, 'b ... d -> b d ...')
+            output = rearrange(output, "b ... d -> b d ...")
 
         return self.dropout(output)
 
     def decorate_branch(self, branch):
-        assert not exists(self.branches), 'branch was already wrapped on init'
+        assert not exists(self.branches), "branch was already wrapped on init"
 
         def forward_and_add_residual(residual, *args, **kwargs):
             branch_input, add_residual = self.forward(residual)
@@ -195,9 +224,13 @@ class HyperConnections(Module):
             else:
                 branches = branch
 
-            branch_inputs = rearrange(branch_input, '(br b) ... -> br b ...', br = len(branches))
+            branch_inputs = rearrange(
+                branch_input, "(br b) ... -> br b ...", br=len(branches)
+            )
 
-            branch_outputs = [fn(x, *args, **kwargs) for fn, x in zip(branches, branch_inputs)]
+            branch_outputs = [
+                fn(x, *args, **kwargs) for fn, x in zip(branches, branch_inputs)
+            ]
 
             branch_output = torch.cat(branch_outputs)
 
@@ -221,13 +254,23 @@ class HyperConnections(Module):
         if not exists(self.branches):
             return branch_input, add_residual_fn
 
-        branch_inputs = rearrange(branch_input, '(br b) ... -> br b ...', br = len(self.branches))
+        branch_inputs = rearrange(
+            branch_input, "(br b) ... -> br b ...", br=len(self.branches)
+        )
 
-        branch_outputs = [fn(x, *branch_args, **branch_kwargs) for fn, x in zip(self.branches, branch_inputs)]
+        branch_outputs = [
+            fn(x, *branch_args, **branch_kwargs)
+            for fn, x in zip(self.branches, branch_inputs)
+        ]
 
         branch_output = torch.cat(branch_outputs)
 
         return add_residual_fn(branch_output)
 
-HyperConnections.get_expand_reduce_stream_functions = staticmethod(get_expand_reduce_stream_functions)
-HyperConnections.get_init_and_expand_reduce_stream_functions = staticmethod(get_init_and_expand_reduce_stream_functions)
+
+HyperConnections.get_expand_reduce_stream_functions = staticmethod(
+    get_expand_reduce_stream_functions
+)
+HyperConnections.get_init_and_expand_reduce_stream_functions = staticmethod(
+    get_init_and_expand_reduce_stream_functions
+)

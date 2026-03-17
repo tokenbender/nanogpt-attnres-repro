@@ -11,8 +11,8 @@ This repo vendors the minimal nanoGPT + mHC experiment harness from `tokenbender
 
 ## Goals
 
-- keep the training harness small, hackable, and multi-GPU friendly
-- implement each method against paper equations, not hand-wavy approximations
+- keep the training harness compact, easy to modify, and multi-GPU friendly
+- implement each method directly from the paper equations
 - require mathematical and integration tests before trusting any experiment result
 - reproduce the mechanism-level claims of the AttnRes paper at nanoGPT scale
 
@@ -62,17 +62,17 @@ See `docs/FEATURE_ISSUES.md` for the first feature issues to build.
 
 ## Correctness Policy
 
-The bar in this repo is simple:
+Correctness policy:
 
 - no approximate AttnRes implementation gets merged as if it were faithful
-- every optimized residual mixer needs a tiny reference implementation
+- every optimized residual mixer needs a small reference implementation
 - degenerate and boundary cases must be tested before long runs are trusted
 - experiment plots are only meaningful after invariants and integration tests pass
 
 ## Budgeting Strategy
 
 - FineWeb comparison configs lock experiment semantics with `target_tokens_per_iter` and `target_tokens`
-- tune `batch_size` for the hardware you actually have, and let the trainer derive accumulation to preserve the semantic batch
+- tune `batch_size` for the available hardware, and let the trainer derive accumulation to preserve the semantic batch
 - prefer higher real microbatch size and lower accumulation on larger GPUs, as long as the semantic target stays fixed
 
 ## Autotuning
