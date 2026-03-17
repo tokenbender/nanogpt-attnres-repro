@@ -7,10 +7,10 @@ LOG_ROOT="${SCRIPT_DIR}/../../experiments/launcher"
 
 # Edit this list if you want a different default sequence.
 DEFAULT_ALGOS=(
-    baseline
-    mhc
     attnres-full
     attnres-block
+    mhc
+    baseline
 )
 
 usage() {
@@ -20,7 +20,7 @@ Usage: run_matrix_48l_all.sh [--dry-run] [algo ...]
 Launches the shared 48-layer matrix sequentially using run_matrix_48l.sh.
 
 If no algorithm names are provided, the default sequence is:
-  baseline mhc attnres-full attnres-block
+  attnres-full attnres-block mhc baseline
 
 Examples:
   ./run_matrix_48l_all.sh
