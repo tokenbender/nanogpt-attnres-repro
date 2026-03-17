@@ -36,16 +36,16 @@ Non-goals for the first phase:
 
 ## Current Status
 
-Active implementation workspace.
-
 - vendored nanoGPT training harness
 - vendored `hyper_connections` package for mHC experiments
-- run-contract and mHC invariant tests copied in
-- Full AttnRes reference and training-path integration are in progress
+- run-contract, invariant, and comparison-config tests are in place
+- Full AttnRes and Block AttnRes are integrated into the training path
+- the primary comparison matrix is the shared 48-layer / ~1B-token family in `experiments/comparison_matrix.csv`
+- `run_matrix_48l.sh` and `run_matrix_48l_all.sh` launch the current canonical runs
 
 Legacy `HC` and `vRes` codepaths are currently vendored only because they are present in the inherited nanoGPT harness. They are not part of the primary comparison matrix for this repo.
 
-See `docs/FEATURE_ISSUES.md` for the first feature issues to build.
+See `experiments/comparison_matrix.csv` for the current run plan and `docs/FEATURE_ISSUES.md` for the original implementation issue history.
 
 ## Paper References
 
@@ -61,8 +61,6 @@ See `docs/FEATURE_ISSUES.md` for the first feature issues to build.
 - `docs/` - roadmap, issue seeds, paper-locked constraints
 
 ## Correctness Policy
-
-Correctness policy:
 
 - no approximate AttnRes implementation gets merged as if it were faithful
 - every optimized residual mixer needs a small reference implementation
@@ -82,7 +80,7 @@ Correctness policy:
 
 ```bash
 cd examples/nanogpt
-python autotune.py config/train_fineweb10B.py --nproc-per-node 1 --data-dir /path/to/fineweb10B
+python autotune.py config/train_fineweb10B_48l.py --nproc-per-node 1 --data-dir /path/to/fineweb10B
 ```
 
 - the autotuner writes benchmark artifacts and a `results.csv` under `experiments/autotune/`
@@ -91,7 +89,8 @@ python autotune.py config/train_fineweb10B.py --nproc-per-node 1 --data-dir /pat
 
 - `examples/nanogpt/run_matrix_48l.sh` launches the shared 48-layer comparison family with one CLI argument
 - `examples/nanogpt/run_matrix_48l_all.sh` launches the canonical four-run sequence sequentially
-- edit the variables at the top of that file to change the W&B project, group, world size, batch size, or shared overrides
+- the default sequential order is `attnres-full`, `attnres-block`, `mhc`, `baseline`
+- edit the variables at the top of those files to change the W&B project, group, world size, batch size, shared overrides, or default sequence
 - example usage:
 
 ```bash
@@ -100,6 +99,7 @@ cd examples/nanogpt
 ./run_matrix_48l.sh mhc
 ./run_matrix_48l.sh attnres-full
 ./run_matrix_48l.sh attnres-block
+./run_matrix_48l.sh attnres-full --dry-run
 ./run_matrix_48l_all.sh
 ```
 
@@ -108,13 +108,17 @@ cd examples/nanogpt
 The vendored train harness currently expects FineWeb-style binary shards.
 
 - Place shards under `examples/nanogpt/data/fineweb10B/` or pass `data_dir=...` at launch time.
-
 - The current downloader script lives at `examples/nanogpt/data/fineweb10B/download.py`.
 
-## First Build Sequence
+```bash
+cd examples/nanogpt/data/fineweb10B
+python download.py 103
+```
 
-1. baseline + mHC correctness in the standalone repo
-2. Full AttnRes reference implementation
-3. Full AttnRes training-path integration
-4. Block AttnRes implementation with paper-faithful block bookkeeping
-5. diagnostics and multi-GPU comparison runs
+## Current Experiment Flow
+
+1. download FineWeb shards with `examples/nanogpt/data/fineweb10B/download.py`
+2. check or edit the canonical run settings in `examples/nanogpt/run_matrix_48l.sh`
+3. preview commands with `./run_matrix_48l.sh <algo> --dry-run` or `./run_matrix_48l_all.sh --dry-run`
+4. run the canonical 48-layer matrix one-by-one with `./run_matrix_48l.sh <algo>` or sequentially with `./run_matrix_48l_all.sh`
+5. record results back into `experiments/comparison_matrix.csv`
