@@ -194,6 +194,8 @@ examples/nanogpt/out*/
 examples/nanogpt/wandb/
 experiments/*
 !experiments/comparison_matrix.csv
+!experiments/reports/
+!experiments/reports/**
 
 # Local workflow markers
 .steed-gate-scope
