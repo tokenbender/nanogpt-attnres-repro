@@ -192,6 +192,8 @@ cython_debug/
 # Project outputs
 examples/nanogpt/out*/
 examples/nanogpt/wandb/
+experiments/*
+!experiments/comparison_matrix.csv
 
 # Local workflow markers
 .steed-gate-scope
