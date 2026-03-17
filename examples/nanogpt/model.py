@@ -187,7 +187,7 @@ class GPTConfig:
         self.hc_num_fracs = kwargs.pop("hc_num_fracs", 1)
         self.hc_disable = kwargs.pop("hc_disable", False)
         self.mhc = kwargs.pop("mhc", False)
-        self.sinkhorn_iters = kwargs.pop("sinkhorn_iters", 10)
+        self.sinkhorn_iters = kwargs.pop("sinkhorn_iters", 20)
         self.sinkhorn_tau = kwargs.pop("sinkhorn_tau", 0.05)
         self.mhc_h_res_proj = kwargs.pop("mhc_h_res_proj", "sinkhorn")
         self.ns_steps = kwargs.pop("ns_steps", 5)

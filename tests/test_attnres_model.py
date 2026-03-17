@@ -95,6 +95,12 @@ def test_full_attnres_allocates_queries_per_logical_layer_plus_output() -> None:
 
     assert model.attnres_num_logical_layers == 6
     assert model.attnres_mixer.mixer.queries.shape == (7, config.n_embd)
+    assert len(model.attnres_mixer.mixer.key_norms) == 7
+    assert model.attnres_mixer.mixer.key_norms[0].weight.shape == (config.n_embd,)
+    assert (
+        model.attnres_mixer.mixer.key_norms[0]
+        is not model.attnres_mixer.mixer.key_norms[1]
+    )
 
 
 def test_block_attnres_gpt_matches_reference_rollout() -> None:

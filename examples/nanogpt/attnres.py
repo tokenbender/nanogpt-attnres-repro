@@ -26,9 +26,12 @@ def _stack_sources(source_values: Sequence[Tensor] | Tensor) -> Tensor:
 
 
 class ReferenceRMSNorm(nn.Module):
-    def __init__(self, eps: float = 1e-8):
+    def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
+        if dim <= 0:
+            raise ValueError("dim must be positive")
         self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: Tensor) -> Tensor:
         compute_dtype = (
@@ -36,7 +39,8 @@ class ReferenceRMSNorm(nn.Module):
         )
         rms = x.to(compute_dtype).pow(2).mean(dim=-1, keepdim=True)
         scale = torch.rsqrt(rms + self.eps).to(dtype=x.dtype)
-        return x * scale
+        weight = self.weight.to(dtype=x.dtype)
+        return x * scale * weight
 
 
 class DepthSoftmaxMixer(nn.Module):
@@ -49,7 +53,9 @@ class DepthSoftmaxMixer(nn.Module):
 
         self.num_queries = num_queries
         self.dim = dim
-        self.key_norm = ReferenceRMSNorm(eps=eps)
+        self.key_norms = nn.ModuleList(
+            [ReferenceRMSNorm(dim=dim, eps=eps) for _ in range(num_queries)]
+        )
         self.queries = nn.Parameter(torch.zeros(num_queries, dim))
 
     def _validate_query_index(self, query_index: int) -> None:
@@ -73,7 +79,7 @@ class DepthSoftmaxMixer(nn.Module):
         source_tensor = _stack_sources(source_values)
         self._validate_source_tensor(source_tensor)
 
-        normed_sources = self.key_norm(source_tensor)
+        normed_sources = self.key_norms[query_index](source_tensor)
         query = self.queries[query_index].to(dtype=source_tensor.dtype)
         logits = torch.einsum("d,s...d->s...", query, normed_sources)
         weights = F.softmax(logits, dim=0)

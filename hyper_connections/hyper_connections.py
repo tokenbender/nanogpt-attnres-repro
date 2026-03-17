@@ -47,40 +47,46 @@ def add(x, y):
     return x + y
 
 
-def sinkhorn_log(logits, num_iters=10, tau=0.05):
-    n = logits.shape[-1]
+def sinkhorn_log(logits, num_iters=20, tau=0.05):
     Z = logits / tau
-    log_marginal = torch.full(
-        (n,), -math.log(n), device=logits.device, dtype=logits.dtype
-    )
+    n = logits.shape[-1]
+    log_marginal = torch.zeros(logits.shape[:-1], device=Z.device, dtype=Z.dtype)
 
-    u = torch.zeros(n, device=Z.device, dtype=Z.dtype)
-    v = torch.zeros(n, device=Z.device, dtype=Z.dtype)
+    u = torch.zeros_like(log_marginal)
+    v = torch.zeros_like(log_marginal)
 
     for _ in range(num_iters):
-        u = log_marginal - torch.logsumexp(Z + v.unsqueeze(0), dim=1)
-        v = log_marginal - torch.logsumexp(Z + u.unsqueeze(1), dim=0)
+        u = log_marginal - torch.logsumexp(Z + v.unsqueeze(-2), dim=-1)
+        v = log_marginal - torch.logsumexp(Z + u.unsqueeze(-1), dim=-2)
 
-    return torch.exp(Z + u.unsqueeze(1) + v.unsqueeze(0)) * n
+    output = torch.exp(Z + u.unsqueeze(-1) + v.unsqueeze(-2))
+    if output.shape[-2:] != (n, n):
+        raise RuntimeError("sinkhorn_log produced an invalid output shape")
+    return output
 
 
 def zeropower_via_newtonschulz(X, steps=5, eps=1e-7, coeffs=(3.0, -3.2, 1.2)):
-    a, b, c = coeffs
+    if len(coeffs) == 3 and all(isinstance(v, (int, float)) for v in coeffs):
+        coeff_schedule = [coeffs] * steps
+    elif len(coeffs) == steps:
+        coeff_schedule = list(coeffs)
+    else:
+        raise ValueError("ns_coeffs must be a 3-tuple or a per-step schedule")
 
-    X = X / (X.norm() + eps)
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
 
     transpose = False
-    if X.shape[0] > X.shape[1]:
-        X = X.T
+    if X.shape[-2] > X.shape[-1]:
+        X = X.transpose(-2, -1)
         transpose = True
 
-    for _ in range(steps):
-        A = X @ X.T
+    for a, b, c in coeff_schedule:
+        A = X @ X.transpose(-2, -1)
         B = b * A + c * A @ A
         X = a * X + B @ X
 
     if transpose:
-        X = X.T
+        X = X.transpose(-2, -1)
 
     return X
 
@@ -139,13 +145,20 @@ def get_init_and_expand_reduce_stream_functions(
 
 
 class RMSNorm(Module):
-    def __init__(self, dim):
+    def __init__(self, dim, eps=1e-20):
         super().__init__()
         self.scale = dim**0.5
+        self.eps = eps
         self.gamma = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x):
-        return F.normalize(x, dim=-1) * self.scale * (self.gamma + 1)
+        compute_dtype = (
+            x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
+        )
+        rms = x.to(compute_dtype).pow(2).mean(dim=-1, keepdim=True)
+        scale = torch.rsqrt(rms + self.eps).to(dtype=x.dtype)
+        gamma = (self.gamma + 1).to(dtype=x.dtype)
+        return x * scale * self.scale * gamma
 
 
 # main classes
@@ -227,7 +240,7 @@ class HyperConnections(Module):
         depth_residual_fn=add,
         num_fracs=1,  # https://arxiv.org/abs/2503.14125
         mhc=False,
-        sinkhorn_iters=10,
+        sinkhorn_iters=20,
         sinkhorn_tau=0.05,
         mhc_h_res_proj="sinkhorn",
         ns_steps=5,
@@ -261,9 +274,7 @@ class HyperConnections(Module):
 
         dim //= num_fracs  # effective dim handled in dimension is feature dimension divided by num fractions
 
-        # they used layernorm in paper, but rmsnorm is fine given what we know now
-
-        self.norm = RMSNorm(dim)
+        self.norm = nn.LayerNorm(dim)
 
         assert num_residual_streams > 0, "`num_residual_streams` must be greater than 0"
 
@@ -336,6 +347,7 @@ class HyperConnections(Module):
         self.ns_eps = ns_eps
         self.ns_coeffs = ns_coeffs
         self.mhc_residual_identity_mix = mhc_residual_identity_mix
+        self.mhc_norm = None
 
         if mhc:
             assert num_fracs == 1, "mhc currently requires num_fracs = 1"
@@ -345,12 +357,27 @@ class HyperConnections(Module):
                 "orthostochastic",
             ), "mhc_h_res_proj must be 'sinkhorn' or 'orthostochastic'"
 
+            flat_dim = num_residual_streams * dim
+            init_logit = 8.0
+
+            self.mhc_norm = RMSNorm(flat_dim)
+            self.mhc_alpha_pre = nn.Parameter(torch.ones(()) * 1e-2)
+            self.mhc_alpha_post = nn.Parameter(torch.ones(()) * 1e-2)
+            self.mhc_alpha_res = nn.Parameter(torch.ones(()) * 1e-2)
+            self.mhc_phi_pre = nn.Parameter(torch.zeros(flat_dim, num_residual_streams))
+            self.mhc_phi_post = nn.Parameter(
+                torch.zeros(flat_dim, num_residual_streams)
+            )
+            self.mhc_phi_res = nn.Parameter(
+                torch.zeros(flat_dim, num_residual_streams * num_residual_streams)
+            )
+
             H_res_init = torch.full((num_residual_streams, num_residual_streams), -8.0)
-            H_res_init.fill_diagonal_(0.0)
+            H_res_init.fill_diagonal_(init_logit)
             self.H_res_logits = nn.Parameter(H_res_init)
 
             H_pre_init = torch.full((num_residual_streams,), -8.0)
-            H_pre_init[init_residual_index] = 0.0
+            H_pre_init[init_residual_index] = init_logit
             self.H_pre_logits = nn.Parameter(H_pre_init)
 
             if add_branch_out_to_residual:
@@ -394,15 +421,33 @@ class HyperConnections(Module):
                 residuals_mixed_source, "(b s) ... d -> b ... s d", s=streams
             )
 
+            residuals_flat = rearrange(residuals, "b ... s d -> b ... (s d)")
+            normed_flat = self.mhc_norm(residuals_flat)
+
+            H_res_logits = (
+                self.mhc_alpha_res
+                * rearrange(
+                    normed_flat @ self.mhc_phi_res,
+                    "b ... (s t) -> b ... s t",
+                    s=streams,
+                )
+                + self.H_res_logits
+            )
+
+            H_pre_logits = (
+                self.mhc_alpha_pre * (normed_flat @ self.mhc_phi_pre)
+                + self.H_pre_logits
+            )
+
             if self.mhc_h_res_proj == "orthostochastic":
                 S = orthostochastic_project(
-                    self.H_res_logits,
+                    H_res_logits,
                     ns_steps=self.ns_steps,
                     ns_eps=self.ns_eps,
                     ns_coeffs=self.ns_coeffs,
                 )
             else:
-                S = sinkhorn_log(self.H_res_logits, self.sinkhorn_iters, self.sinkhorn_tau)
+                S = sinkhorn_log(H_res_logits, self.sinkhorn_iters, self.sinkhorn_tau)
 
             if self.mhc_residual_identity_mix:
                 alpha = torch.sigmoid(self.H_res_alpha_logit)
@@ -411,16 +456,20 @@ class HyperConnections(Module):
             else:
                 H_res = S
 
-            H_pre = F.softmax(self.H_pre_logits, dim=-1)
+            H_pre = torch.sigmoid(H_pre_logits)
 
             H_post = None
             if self.add_branch_out_to_residual:
-                H_post = F.softmax(self.H_post_logits, dim=-1)
+                H_post_logits = (
+                    self.mhc_alpha_post * (normed_flat @ self.mhc_phi_post)
+                    + self.H_post_logits
+                )
+                H_post = 2.0 * torch.sigmoid(H_post_logits)
 
             residuals_mixed = einsum(
-                H_res, residuals_mixed_source, "s t, ... s d -> ... t d"
+                H_res, residuals_mixed_source, "b ... s t, b ... s d -> b ... t d"
             )
-            branch_input = einsum(H_pre, residuals, "s, ... s d -> ... d")
+            branch_input = einsum(H_pre, residuals, "b ... s, b ... s d -> b ... d")
 
             if getattr(self, "collect_stats", False):
                 with torch.no_grad():
@@ -554,7 +603,9 @@ class HyperConnections(Module):
             assert residuals_mixed is not None
             assert beta is not None
 
-            branch_to_streams = einsum(branch_output, beta, "b ... d, s -> b ... s d")
+            branch_to_streams = einsum(
+                branch_output, beta, "b ... d, b ... s -> b ... s d"
+            )
             output = residuals_mixed + branch_to_streams
             output = rearrange(output, "b ... s d -> (b s) ... d")
 

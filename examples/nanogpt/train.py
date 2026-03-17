@@ -97,7 +97,7 @@ hc_num_streams = 1
 hc_num_fracs = 1
 hc_disable = True
 mhc = False
-sinkhorn_iters = 10
+sinkhorn_iters = 20
 sinkhorn_tau = 0.05
 mhc_h_res_proj = "sinkhorn"
 ns_steps = 5
@@ -453,9 +453,15 @@ def _write_config_effective(*, out_dir_path: Path) -> None:
         "ns_steps",
         "ns_eps",
         "ns_coeffs",
+        "mhc_residual_identity_mix",
+        "mhc_residual_alpha",
         # v-residual
         "v_residual",
         "v_residual_lamb_lr",
+        # attention residuals
+        "attnres_variant",
+        "attnres_block_size",
+        "attnres_eps",
         # logging
         "wandb_log",
         "wandb_project",
@@ -646,8 +652,13 @@ model_config = GPTConfig(
     ns_steps=ns_steps,
     ns_eps=ns_eps,
     ns_coeffs=ns_coeffs,
+    mhc_residual_identity_mix=mhc_residual_identity_mix,
+    mhc_residual_alpha=mhc_residual_alpha,
     v_residual=v_residual,
     v_residual_lamb_lr=v_residual_lamb_lr,
+    attnres_variant=attnres_variant,
+    attnres_block_size=attnres_block_size,
+    attnres_eps=attnres_eps,
 )
 
 model = GPT(model_config)
@@ -662,11 +673,18 @@ if ddp:
 
 raw_model = model.module if ddp else model
 
+
+def iter_hc_modules(block):
+    for name in ("hc_attn", "hc_mlp"):
+        hc = getattr(block, name, None)
+        if isinstance(hc, HyperConnections):
+            yield hc
+
+
 if wandb_log and wandb_log_layer_stats:
     for block in raw_model.transformer.h:
-        for hc in (block.hc_attn, block.hc_mlp):
-            if isinstance(hc, HyperConnections):
-                hc.collect_stats = True
+        for hc in iter_hc_modules(block):
+            hc.collect_stats = True
 
 optimizer = raw_model.configure_optimizers(
     weight_decay=weight_decay,
@@ -695,7 +713,7 @@ def collect_hc_layer_stats():
     layer_count = len(raw_model.transformer.h) * 2
     layer_stats = {}
     for block_idx, block in enumerate(raw_model.transformer.h):
-        for sub_idx, hc in enumerate((block.hc_attn, block.hc_mlp)):
+        for sub_idx, hc in enumerate(iter_hc_modules(block)):
             if not hasattr(hc, "last_stats"):
                 continue
             layer_index = block_idx * 2 + sub_idx

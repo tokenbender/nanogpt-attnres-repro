@@ -246,21 +246,43 @@ def test_mhc_H_pre_H_post_constraints():
     from hyper_connections.hyper_connections import HyperConnections
 
     hc = HyperConnections(num_residual_streams=4, dim=64, mhc=True)
-    H_pre = torch.softmax(hc.H_pre_logits, dim=-1)
-    H_post = torch.softmax(hc.H_post_logits, dim=-1)
+    H_pre = torch.sigmoid(hc.H_pre_logits)
+    H_post = 2.0 * torch.sigmoid(hc.H_post_logits)
 
     assert H_pre.min().item() >= 0
     assert H_post.min().item() >= 0
+    assert H_pre.max().item() > 0.99
+    assert (H_pre < 0.01).sum().item() == 3
     assert torch.allclose(
-        H_pre.sum(),
-        torch.ones((), device=H_pre.device, dtype=H_pre.dtype),
+        H_post,
+        torch.ones_like(H_post),
         atol=1e-6,
     )
-    assert torch.allclose(
-        H_post.sum(),
-        torch.ones((), device=H_post.device, dtype=H_post.dtype),
-        atol=1e-6,
-    )
+
+
+def test_mhc_branch_input_is_input_dependent() -> None:
+    from hyper_connections.hyper_connections import HyperConnections
+
+    torch.manual_seed(0)
+
+    hc = HyperConnections(num_residual_streams=2, dim=4, mhc=True)
+
+    with torch.no_grad():
+        hc.H_pre_logits.zero_()
+        hc.mhc_alpha_pre.fill_(1.0)
+        hc.mhc_phi_pre.zero_()
+        hc.mhc_phi_pre[0, 0] = 1.0
+        hc.mhc_phi_pre[0, 1] = -1.0
+
+    x_pos = torch.zeros(2, 1, 4)
+    x_pos[0, 0, 0] = 1.0
+    x_neg = x_pos.clone()
+    x_neg[0, 0, 0] = -1.0
+
+    branch_input_pos, _ = hc(x_pos)
+    branch_input_neg, _ = hc(x_neg)
+
+    assert not torch.allclose(branch_input_pos, branch_input_neg)
 
 
 def test_mhc_forward_shapes():
@@ -291,6 +313,12 @@ def test_mhc_gradients_flow():
     assert hc.H_res_logits.grad is not None
     assert hc.H_pre_logits.grad is not None
     assert hc.H_post_logits.grad is not None
+    assert hc.mhc_phi_res.grad is not None
+    assert hc.mhc_phi_pre.grad is not None
+    assert hc.mhc_phi_post.grad is not None
+    assert hc.mhc_alpha_res.grad is not None
+    assert hc.mhc_alpha_pre.grad is not None
+    assert hc.mhc_alpha_post.grad is not None
     assert not torch.isnan(hc.H_res_logits.grad).any()
     assert not torch.isnan(hc.H_pre_logits.grad).any()
     assert not torch.isnan(hc.H_post_logits.grad).any()
@@ -349,6 +377,9 @@ def test_mhc_identity_mix_gradients_flow():
     assert hc.H_res_logits.grad is not None
     assert hc.H_pre_logits.grad is not None
     assert hc.H_post_logits.grad is not None
+    assert hc.mhc_phi_res.grad is not None
+    assert hc.mhc_phi_pre.grad is not None
+    assert hc.mhc_phi_post.grad is not None
     assert hc.H_res_alpha_logit.grad is not None
     assert not torch.isnan(hc.H_res_alpha_logit.grad).any()
 

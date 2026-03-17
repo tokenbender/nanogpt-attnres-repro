@@ -230,3 +230,144 @@ def test_nanogpt_semantic_budget_lock_smoke(tmp_path: Path):
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["ok"] is True
     assert summary["tokens_per_iter"] == 64
+
+
+def test_nanogpt_attnres_run_contract_smoke(tmp_path: Path):
+    repo_dir = Path(__file__).resolve().parents[1]
+    nanogpt_dir = repo_dir / "examples" / "nanogpt"
+
+    data_dir = tmp_path / "fineweb10B"
+    train_path = data_dir / "fineweb_train_000000.bin"
+    val_path = data_dir / "fineweb_val_000000.bin"
+
+    rng = np.random.default_rng(2)
+    _write_fineweb_shard(train_path, rng.integers(0, 1000, size=4096, dtype=np.uint16))
+    _write_fineweb_shard(val_path, rng.integers(0, 1000, size=2048, dtype=np.uint16))
+
+    out_dir = tmp_path / "out" / "attnres-run-contract-smoke"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = out_dir / "stdout.log"
+
+    cmd = [
+        sys.executable,
+        "train.py",
+        "config/train_fineweb10B.py",
+        f"out_dir={out_dir}",
+        f"data_dir={data_dir}",
+        "wandb_log=False",
+        "compile_model=False",
+        "dtype='float32'",
+        "device='cpu'",
+        "max_iters=0",
+        "eval_interval=1",
+        "eval_iters=1",
+        "log_interval=1",
+        "batch_size=2",
+        "block_size=32",
+        "n_layer=1",
+        "n_head=1",
+        "n_embd=32",
+        "dropout=0.0",
+        "gradient_accumulation_steps=1",
+        "target_tokens_per_iter=None",
+        "target_tokens=None",
+        "lock_lr_decay_to_max_iters=False",
+        "attnres_variant='full'",
+        "hc_disable=True",
+        "mhc=False",
+        "v_residual=False",
+    ]
+
+    env = os.environ.copy()
+    env.pop("RANK", None)
+    env.pop("LOCAL_RANK", None)
+    env.pop("WORLD_SIZE", None)
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+
+    with stdout_log.open("wb") as f:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(nanogpt_dir),
+            env=env,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+            check=False,
+        )
+
+    assert proc.returncode == 0, stdout_log.read_text(errors="replace")
+
+    cfg = json.loads((out_dir / "config_effective.json").read_text(encoding="utf-8"))
+    assert cfg["attnres_variant"] == "full"
+    assert cfg["attnres_block_size"] == 1
+
+
+def test_nanogpt_attnres_invalid_combo_fails_fast(tmp_path: Path):
+    repo_dir = Path(__file__).resolve().parents[1]
+    nanogpt_dir = repo_dir / "examples" / "nanogpt"
+
+    data_dir = tmp_path / "fineweb10B"
+    train_path = data_dir / "fineweb_train_000000.bin"
+    val_path = data_dir / "fineweb_val_000000.bin"
+
+    rng = np.random.default_rng(3)
+    _write_fineweb_shard(train_path, rng.integers(0, 1000, size=4096, dtype=np.uint16))
+    _write_fineweb_shard(val_path, rng.integers(0, 1000, size=2048, dtype=np.uint16))
+
+    out_dir = tmp_path / "out" / "attnres-invalid-combo"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = out_dir / "stdout.log"
+
+    cmd = [
+        sys.executable,
+        "train.py",
+        "config/train_fineweb10B.py",
+        f"out_dir={out_dir}",
+        f"data_dir={data_dir}",
+        "wandb_log=False",
+        "compile_model=False",
+        "dtype='float32'",
+        "device='cpu'",
+        "max_iters=0",
+        "eval_interval=1",
+        "eval_iters=1",
+        "log_interval=1",
+        "batch_size=2",
+        "block_size=32",
+        "n_layer=1",
+        "n_head=1",
+        "n_embd=32",
+        "dropout=0.0",
+        "gradient_accumulation_steps=1",
+        "target_tokens_per_iter=None",
+        "target_tokens=None",
+        "lock_lr_decay_to_max_iters=False",
+        "attnres_variant='full'",
+        "hc_disable=False",
+        "mhc=False",
+        "v_residual=False",
+    ]
+
+    env = os.environ.copy()
+    env.pop("RANK", None)
+    env.pop("LOCAL_RANK", None)
+    env.pop("WORLD_SIZE", None)
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+
+    with stdout_log.open("wb") as f:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(nanogpt_dir),
+            env=env,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+            check=False,
+        )
+
+    assert proc.returncode != 0
+    assert "Attention Residuals requires hc_disable=True" in stdout_log.read_text(
+        errors="replace"
+    )
