@@ -87,6 +87,20 @@ python autotune.py config/train_fineweb10B.py --nproc-per-node 1 --data-dir /pat
 
 - the autotuner writes benchmark artifacts and a `results.csv` under `experiments/autotune/`
 
+## Matrix Launcher
+
+- `examples/nanogpt/run_matrix_48l.sh` launches the shared 48-layer comparison family with one CLI argument
+- edit the variables at the top of that file to change the W&B project, group, world size, batch size, or shared overrides
+- example usage:
+
+```bash
+cd examples/nanogpt
+./run_matrix_48l.sh baseline
+./run_matrix_48l.sh mhc
+./run_matrix_48l.sh attnres-full
+./run_matrix_48l.sh attnres-block
+```
+
 ## Local Data
 
 The vendored train harness currently expects FineWeb-style binary shards.
