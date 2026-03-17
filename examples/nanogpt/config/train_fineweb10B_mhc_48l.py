@@ -1,5 +1,5 @@
 # FineWeb10B with mHC (4 streams, 48 layers)
-# ~20M param GPT-2 style model
+# ~20M param GPT-2 style model with higher depth for fuller multi-GPU utilization
 #
 # Usage:
 #   python train.py config/train_fineweb10B_mhc_48l.py
@@ -7,7 +7,6 @@
 
 out_dir = "out-fineweb10B-mhc-48l"
 wandb_run_name = "mhc-48l"
-wandb_project = "mhc-nanogpt-48"
 
 dataset = "fineweb10B"
 
@@ -19,9 +18,15 @@ n_embd = 150
 dropout = 0.0
 bias = False
 
+# training
+# Lock semantics to a 128-sequence global batch (131,072 tokens/update) and
+# ~1.05B total tokens. Override `batch_size` per hardware; the trainer will
+# derive accumulation to preserve the semantic batch.
 batch_size = 8
-gradient_accumulation_steps = 4
-max_iters = 5000
+gradient_accumulation_steps = 16
+target_tokens_per_iter = 131072
+target_tokens = 1048576000
+max_iters = 8000
 eval_interval = 500
 log_interval = 10
 eval_iters = 100
@@ -35,7 +40,8 @@ grad_clip = 1.0
 
 # lr schedule
 warmup_iters = 200
-lr_decay_iters = 5000
+lr_decay_iters = 8000
+lock_lr_decay_to_max_iters = True
 min_lr = 6e-5
 
 # dtype

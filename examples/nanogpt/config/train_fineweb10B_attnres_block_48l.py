@@ -1,12 +1,12 @@
-# FineWeb10B baseline config (48 layers, no HyperConnections)
+# FineWeb10B with Block Attention Residuals (48 layers)
 # ~20M param GPT-2 style model with higher depth for fuller multi-GPU utilization
 #
 # Usage:
-#   python train.py config/train_fineweb10B_48l.py
-#   torchrun --standalone --nproc_per_node=4 train.py config/train_fineweb10B_48l.py
+#   python train.py config/train_fineweb10B_attnres_block_48l.py
+#   torchrun --standalone --nproc_per_node=4 train.py config/train_fineweb10B_attnres_block_48l.py
 
-out_dir = "out-fineweb10B-48l"
-wandb_run_name = "baseline-48l"
+out_dir = "out-fineweb10B-attnres-block-48l"
+wandb_run_name = "attnres-block-48l"
 
 dataset = "fineweb10B"
 
@@ -47,7 +47,10 @@ min_lr = 6e-5
 # dtype
 dtype = "bfloat16"
 
-# hyper-connections: DISABLED (baseline)
+# residual mechanism
 hc_num_streams = 1
 hc_num_fracs = 1
 hc_disable = True
+mhc = False
+attnres_variant = "block"
+attnres_block_size = 4
