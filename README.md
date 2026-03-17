@@ -90,6 +90,7 @@ python autotune.py config/train_fineweb10B.py --nproc-per-node 1 --data-dir /pat
 ## Matrix Launcher
 
 - `examples/nanogpt/run_matrix_48l.sh` launches the shared 48-layer comparison family with one CLI argument
+- `examples/nanogpt/run_matrix_48l_all.sh` launches the canonical four-run sequence sequentially
 - edit the variables at the top of that file to change the W&B project, group, world size, batch size, or shared overrides
 - example usage:
 
@@ -99,6 +100,7 @@ cd examples/nanogpt
 ./run_matrix_48l.sh mhc
 ./run_matrix_48l.sh attnres-full
 ./run_matrix_48l.sh attnres-block
+./run_matrix_48l_all.sh
 ```
 
 ## Local Data
