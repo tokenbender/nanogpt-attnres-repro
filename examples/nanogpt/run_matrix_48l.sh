@@ -14,11 +14,11 @@ fi
 NPROC_PER_NODE=8
 WANDB_PROJECT="nanogpt-attnres-repro"
 WANDB_GROUP="fineweb10B-48l-blackwell8-v1"
-BATCH_SIZE=16
+BATCH_SIZE=8
 
 # Add any shared overrides here, for example:
 # EXTRA_OVERRIDES=("compile_model=True")
-EXTRA_OVERRIDES=()
+EXTRA_OVERRIDES=("compile_model=True")
 
 usage() {
     cat <<'EOF'
